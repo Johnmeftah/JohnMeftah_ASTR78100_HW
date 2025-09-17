@@ -13,6 +13,6 @@ E(x) = \int(0 --> x)  e^{-t^2} dt
 - Plots \( E(x) \) as a function of \( x \)  
 
 ## How to Run
-python hw2_integration.py
+python integration.py
 
 
