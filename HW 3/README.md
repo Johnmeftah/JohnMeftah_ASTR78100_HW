@@ -16,13 +16,13 @@ You can also add a simple plot that shows Earth, L1, and the other body lined up
 1- **Basic run (Earth–Moon system):**
 L1_distance_newton.py
 
-2- Use custom values:
+2- **Use custom values:**
 L1_distance_newton.py --guess 0.84 --tol 1e-10 --max-iter 100
 
-3- Switch to the Sun–Earth system:
+3- **Switch to the Sun–Earth system:**
 L1_distance_newton.py --system sun-earth
 
-4- Add a simple plot:
+4- **Add a simple plot:**
 L1_distance_newton.py --plot-line
 
 
