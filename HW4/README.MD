@@ -1,0 +1,41 @@
+Fourier time series (TESS)
+
+I load a TESS light curve and make a few plots:
+raw light curve, Fourier spectrum (using Ari’s method), a gap filled version,
+a reconstruction using only a few Fourier terms, a phase folded light curve, and a
+spectral window of the sampling.
+------------------------------------------------------------------------------------
+
+Commands:
+
+light_curve
+Plot brightness vs time. Just to see the data.
+
+fourier
+USing  Ari’s discrete Fourier transform on the densest chunk of data.
+Shows a power vs index plot and prints the strongest peaks with their frequency and period.
+
+fourier_interp
+Same as fourier, but I first fill small missing time steps by straight line interpolation
+on a uniform grid.
+
+reconstruct 
+Rebuilds the light curve using only the K strongest Fourier terms, then plot it against
+the original to see how well a few terms capture the eclipses.
+
+fold
+Takes the best period from the Fourier result, fold the light curve to that period,
+and overlay a binned median curve. If the period is right, the eclipses line up.
+
+window
+Plots the spectral window (the frequency content of the sampling itself).
+I keep getting zero for all the coefficents.
+
+How I did it:
+1- I pick the densest block, make a uniform time grid using the median step,
+mark grid points where we actually have data, run Ari’s transform on that mask,
+and plot the mask’s power vs index. Keeps coming back to zero, not sure why. 
+
+
+
+
