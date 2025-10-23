@@ -33,8 +33,8 @@ Examples:
   python photon_slab.py 200 1000
   python photon_slab.py animate 200 1000
   python photon_slab.py sun N [SEED] [SCALE]
-  python sun.py sun 200          # physical density (very slow)
-  python sun.py sun 200 0 1e-12  # scaled down density for fast testing
+  python photon_slab.py sun 200  # physical density (very slow)
+  python photon_slab.py sun 200 0 1e-12  # scaled down density for fast testing
 """
     print(msg)
 
