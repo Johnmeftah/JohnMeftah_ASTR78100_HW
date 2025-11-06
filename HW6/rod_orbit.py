@@ -1,0 +1,379 @@
+
+import sys
+import numpy as np
+import plotly.graph_objects as go 
+from plotly.subplots import make_subplots
+import plotly.io as pio
+
+# msg
+def print_help() -> None:
+    msg = (
+        "Space Garbage\n\n"
+        "Simulating debris orbiting a finite rod with different integrators.\n\n"
+        "Usage:\n"
+        "  python rod_orbit.py RK4\n"
+        "  python rod_orbit.py leapfrog\n"
+        "  python rod_orbit.py verlet\n"
+        "  python rod_orbit.py midpoint\n"
+        "  python rod_orbit.py BS # bulirsch-stoer\n"
+        "  python rod_orbit.py energy # compare change in energy across methods\n"
+        "  python rod_orbit.py reverse # table + bar chart + forward/reverse overlays\n"
+        "  python rod_orbit.py der # open the HW6 derivations PDF so you see the math\n"
+    )
+    print(msg)
+
+# adding the pdf doc
+def open_derivations_pdf():
+    import os, subprocess, sys
+    pdf_path = os.path.join(os.path.dirname(__file__), "docs", "HW6_Derivations.pdf")
+
+    subprocess.call(["open", pdf_path])  
+
+
+# modeling dynamics
+def accel(x, y, GM, a):
+    r2 = x*x + y*y
+    if r2 == 0:
+        return 0, 0
+    denom = r2 * np.sqrt(r2 + a*a)
+    return (-GM * x / denom, -GM * y / denom)
+
+def deriv(s, GM, a):
+    x, y, vx, vy = s
+    ax, ay = accel(x, y, GM, a)
+    return np.array([vx, vy, ax, ay], dtype=float)
+
+def rk4_step(s, dt, GM, a):
+    k1 = deriv(s, GM, a)
+    k2 = deriv(s + 0.5*dt*k1, GM, a)
+    k3 = deriv(s + 0.5*dt*k2, GM, a)
+    k4 = deriv(s + dt*k3, GM, a)
+    return s + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
+
+# mid point / Bulirsch–Stoer
+def midpoint_substep(s, dt, m, GM, a):
+    h = dt / m
+    y = s.copy()
+    for _ in range(m):
+        k1 = deriv(y, GM, a)
+        y_mid = y + 0.5*h*k1
+        k2 = deriv(y_mid, GM, a)
+        y = y + h*k2
+    return y
+
+def bulirsch_stoer_step(s, dt, GM, a, p=2, m_list=(2, 4, 6, 8)):
+    T = []
+    for k, m in enumerate(m_list):
+        row = [midpoint_substep(s, dt, m, GM, a)]
+        for j in range(1, k+1):
+            mk, mkj = m_list[k], m_list[k-j]
+            factor = (mk / mkj)**p - 1
+            row.append(row[j-1] + (row[j-1] - T[k-1][j-1]) / factor)
+        T.append(row)
+    return T[-1][-1]
+
+# shared velocity-verlet step
+def _vv_step(s, dt, GM, a):
+    x, y, vx, vy = s
+    ax, ay = accel(x, y, GM, a)
+    x_new = x + vx*dt + 0.5*ax*dt*dt
+    y_new = y + vy*dt + 0.5*ay*dt*dt
+    ax_new, ay_new = accel(x_new, y_new, GM, a)
+    vx_new = vx + 0.5*(ax + ax_new)*dt
+    vy_new = vy + 0.5*(ay + ay_new)*dt
+    return np.array([x_new, y_new, vx_new, vy_new], dtype=float)
+
+# the integrators
+def integrate(method, G, M, L, x0, y0, vx0, vy0, t_end, dt):
+    a = L / 2
+    GM = G * M
+    N = int(np.floor(t_end / dt))
+    xs = np.empty(N+1); ys = np.empty(N+1)
+
+    if method == "RK4":
+        s = np.array([x0, y0, vx0, vy0], dtype=float)
+        xs[0], ys[0] = s[0], s[1]
+        for i in range(1, N+1):
+            s = rk4_step(s, dt, GM, a); xs[i], ys[i] = s[0], s[1]
+
+    elif method in ("leapfrog", "verlet"):
+        s = np.array([x0, y0, vx0, vy0], dtype=float)
+        xs[0], ys[0] = s[0], s[1]
+        for i in range(1, N+1):
+            s = _vv_step(s, dt, GM, a); xs[i], ys[i] = s[0], s[1]
+
+    elif method == "midpoint":
+        s = np.array([x0, y0, vx0, vy0], dtype=float)
+        xs[0], ys[0] = s[0], s[1]
+        for i in range(1, N+1):
+            k1 = deriv(s, GM, a)
+            s = s + dt * deriv(s + 0.5*dt*k1, GM, a)
+            xs[i], ys[i] = s[0], s[1]
+
+    elif method == "BS":
+        s = np.array([x0, y0, vx0, vy0], dtype=float)
+        xs[0], ys[0] = s[0], s[1]
+        for i in range(1, N+1):
+            s = bulirsch_stoer_step(s, dt, GM, a, p=2, m_list=(2, 4, 6, 8))
+            xs[i], ys[i] = s[0], s[1]
+    else:
+        raise ValueError("unknown method")
+
+    return xs, ys
+
+# animating
+def simulate_orbit(method="RK4",
+                   G=1, M=10, L=2,
+                   x0=1, y0=0, vx0=0, vy0=1,
+                   t_end=10, dt=0.002, stride=10,
+                   title="Space Garbage"):
+    xs, ys = integrate(method, G, M, L, x0, y0, vx0, vy0, t_end, dt)
+    N = len(xs) - 1
+    idx = np.arange(0, N+1, max(1, int(stride)))
+
+    fig = go.Figure(
+        data=[
+            go.Scatter(x=[xs[0]], y=[ys[0]], mode="lines", name="path"),
+            go.Scatter(x=[xs[0]], y=[ys[0]], mode="markers", name="particle"),
+            go.Scatter(x=[0], y=[0], mode="markers",
+                       marker=dict(symbol="x", size=10),
+                       name="rod axis", showlegend=True),
+        ],
+        layout=go.Layout(
+            title=f"{title} — {method}",
+            xaxis=dict(title="x"),
+            yaxis=dict(title="y", scaleanchor="x", scaleratio=1),
+            legend=dict(x=0.02, y=0.98),
+        ),
+        frames=[
+            go.Frame(
+                data=[
+                    go.Scatter(x=xs[:k+1], y=ys[:k+1]),
+                    go.Scatter(x=[xs[k]], y=[ys[k]]),
+                    go.Scatter(x=[0], y=[0]),
+                ],
+                name=f"f{k}",
+            )
+            for k in idx
+        ],
+    )
+
+# couldn't get the animation to work automaticly, used AI here
+# AI code begins
+
+    html_file = "orbit.html"
+    pio.write_html(
+        fig,
+        file=html_file,
+        include_plotlyjs=True,   # embed JS so it always renders
+        auto_open=True,          # open automatically
+        auto_play=True,          # start animation on load
+        animation_opts={
+            "frame": {"duration": 20, "redraw": True},
+            "transition": {"duration": 0},
+            "fromcurrent": True,
+            "mode": "immediate",
+        },
+    )
+    return fig, xs, ys
+# AI code ends
+
+# energies 
+def compare_energy(methods,
+                   G=1, M=10, L=2,
+                   x0=1, y0=0, vx0=0, vy0=1,
+                   t_end=10, dt=0.002):
+    a = L / 2
+    GM = G * M
+
+    fig = go.Figure(layout=go.Layout(
+        title="energy error vs time (delta E) — log scale",
+        xaxis=dict(title="time"),
+        yaxis=dict(title="delta E", type="log"),
+        legend=dict(x=0.02, y=0.98),
+    ))
+
+    for m in methods:
+        xs, ys = integrate(m, G, M, L, x0, y0, vx0, vy0, t_end, dt)
+        N = len(xs) - 1
+        t = np.linspace(0, N*dt, N+1)
+
+      
+        vx = np.empty(N+1); vy = np.empty(N+1)
+        vx[0] = (xs[1] - xs[0]) / dt
+        vy[0] = (ys[1] - ys[0]) / dt
+        vx[N] = (xs[N] - xs[N-1]) / dt
+        vy[N] = (ys[N] - ys[N-1]) / dt
+        if N >= 2:
+            vx[1:N] = (xs[2:] - xs[:-2]) / (2*dt)
+            vy[1:N] = (ys[2:] - ys[:-2]) / (2*dt)
+
+        r = np.sqrt(xs*xs + ys*ys)
+
+      
+        with np.errstate(divide="ignore"):
+            U = -(GM/a) * np.arcsinh(a / r)
+      
+        K = 0.5 * (vx*vx + vy*vy)
+        E = K + U
+
+        E0 = E[0]
+        rel = np.abs((E - E0) / E0)
+
+        fig.add_trace(go.Scatter(x=t, y=rel, mode="lines", name=m))
+
+    return fig
+
+# couldn't get the reversibility part to work, it's totally written by AI
+# AI code begins:
+# ============================== Reversibility Suite (kept pro) ==============================
+# This block checks time reversibility:
+# 1) Integrate forward from s0 to time T.
+# 2) Integrate backward from the final state with -dt back to ~s0.
+# The norm ||Δs|| = ||s_rev(T_back) - s0|| is reported and plotted.
+# API and plotting outputs are preserved.
+
+def step_once(method: str,
+              s: np.ndarray,
+              dt: float,
+              GM: float,
+              a: float) -> np.ndarray:
+    """
+    Advance state by one step using the specified method.
+
+    For leapfrog/verlet, a symmetric velocity-Verlet step is used to retain
+    time-reversibility properties.
+    """
+    if method == "RK4":
+        return rk4_step(s, dt, GM, a)
+    if method == "midpoint":
+        k1 = deriv(s, GM, a)
+        s_mid = s + 0.5 * dt * k1
+        k2 = deriv(s_mid, GM, a)
+        return s + dt * k2
+    if method == "BS":
+        return bulirsch_stoer_step(s, dt, GM, a, p=2, m_list=(2, 4, 6, 8))
+    if method in ("leapfrog", "verlet"):
+        x, y, vx, vy = s
+        ax, ay = accel(x, y, GM, a)
+        x_new = x + vx*dt + 0.5*ax*dt*dt
+        y_new = y + vy*dt + 0.5*ay*dt*dt
+        ax_new, ay_new = accel(x_new, y_new, GM, a)
+        vx_new = vx + 0.5*(ax + ax_new)*dt
+        vy_new = vy + 0.5*(ay + ay_new)*dt
+        return np.array([x_new, y_new, vx_new, vy_new], dtype=float)
+    raise ValueError("unknown method")
+
+def forward_and_reverse_paths(method: str,
+                              G=1, M=10, L=2,
+                              x0=1, y0=0, vx0=0, vy0=1,
+                              t_end=10, dt=0.002):
+    """
+    Produce forward and reversed-back trajectories for a given integrator.
+
+    Returns:
+        xs, ys : forward trajectory coordinates
+        xr, yr : reversed-back coordinates aligned to the same time indices
+        err    : terminal state discrepancy ||Δs|| after reversing
+    """
+    a = L / 2
+    GM = G * M
+    N = int(np.floor(t_end / dt))
+
+    s0 = np.array([x0, y0, vx0, vy0], dtype=float)
+
+    # forward
+    s = s0.copy()
+    xs = np.empty(N + 1); ys = np.empty(N + 1)
+    xs[0], ys[0] = s[0], s[1]
+    for i in range(1, N + 1):
+        s = step_once(method, s, dt, GM, a)
+        xs[i], ys[i] = s[0], s[1]
+
+    # reverse (-dt)
+    sr = s.copy()
+    xr = np.empty(N + 1); yr = np.empty(N + 1)
+    for i in range(N, -1, -1):
+        xr[i], yr[i] = sr[0], sr[1]
+        if i > 0:
+            sr = step_once(method, sr, -dt, GM, a)
+
+    err = float(np.linalg.norm(sr - s0))
+    return xs, ys, xr, yr, err
+
+def reverse_report_and_plots() -> None:
+    """
+    Print a reversibility table (||Δs||) and display:
+      (a) a log-y bar chart of ||Δs|| per method
+      (b) forward vs. reversed-back trajectory overlays per method
+    """
+    methods = ["RK4", "leapfrog", "verlet", "midpoint", "BS"]
+
+    print("\nReversibility test (defaults): forward to T, reverse back with -dt")
+    print("t_end=10, dt=0.002, G=1, M=10, L=2, (x0,y0,vx0,vy0)=(1,0,0,1)\n")
+    print("{:<16} {:>14}".format("method", "||Δs||"))
+    print("-" * 32)
+
+    results = {}
+    paths = {}
+    for m in methods:
+        xs, ys, xr, yr, err = forward_and_reverse_paths(m)
+        results[m] = err
+        paths[m] = (xs, ys, xr, yr)
+        print("{:<16} {:>14.6e}".format(m, err))
+    print()
+
+    fig_bar = go.Figure(layout=go.Layout(
+        title="Reversibility error ||Δs|| (forward→reverse)",
+        xaxis=dict(title="method"),
+        yaxis=dict(title="||Δs||", type="log"),
+    ))
+    fig_bar.add_trace(go.Bar(x=list(results.keys()), y=list(results.values())))
+    fig_bar.show()
+
+    subplot_titles = [m for m in methods]
+    fig_grid = make_subplots(rows=2, cols=3, subplot_titles=subplot_titles)
+    coords = [(1,1), (1,2), (1,3), (2,1), (2,2)]
+    for (m, (xs, ys, xr, yr)), (r, c) in zip(paths.items(), coords):
+        fig_grid.add_trace(go.Scatter(x=xs, y=ys, mode="lines",
+                                      name=f"{m} forward", showlegend=False),
+                           row=r, col=c)
+        fig_grid.add_trace(go.Scatter(x=xr, y=yr, mode="lines",
+                                      name=f"{m} reversed",
+                                      line=dict(dash="dot"), showlegend=False),
+                           row=r, col=c)
+        fig_grid.update_xaxes(title_text="x", row=r, col=c)
+        fig_grid.update_yaxes(title_text="y",
+                              scaleanchor=f"x{(r-1)*3+c}",
+                              scaleratio=1, row=r, col=c)
+    fig_grid.update_layout(title_text="Forward path (solid) vs reversed-back path (dotted)")
+    fig_grid.show()
+# AI code ends
+    
+# launcher
+def main(argv=None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if len(argv) == 0 or len(argv) != 1:
+        print_help(); return 2
+
+    token = argv[0]
+    if token == "energy":
+        compare_energy(["RK4", "leapfrog", "verlet", "midpoint", "BS"]).show()
+        return 0
+    if token == "reverse":
+        reverse_report_and_plots(); return 0
+
+    if token in ("RK4", "leapfrog", "verlet", "midpoint", "BS"):
+        simulate_orbit(method=token)  # this line is from AI, auto-play
+        return 0
+
+    # NEW: open derivations PDF
+    if token == "der":
+        open_derivations_pdf()
+        return 0
+
+    print_help(); return 2
+
+if __name__ == "__main__":
+    raise SystemExit(main())
