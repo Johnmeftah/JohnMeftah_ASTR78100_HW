@@ -1,0 +1,480 @@
+#!/usr/bin/env python3
+"""
+Simple Newtonian BH binary orbit sim (relative vector in CM frame).
+
+- Leapfrog integrator
+- DEBUG mode  : short, high-res run with plots
+- PROD mode   : long run, no plots, just data
+- Data output : NPZ, CSV, or both (user choice)
+
+Usage:
+    python bh_orbit.py   show help only
+    python bh_orbit.py --interactive
+"""
+
+import sys
+import csv
+from pathlib import Path
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+# constants 
+G     = 6.67430e-11 # m^3 kg^-1 s^-2
+M_SUN = 1.98847e30 # kg
+
+
+# helpe msgs 
+def orbital_period(M, r0):
+    """Newtonian orbital period for a circular orbit at radius r0."""
+    return 2 * np.pi * np.sqrt(r0**3 / (G * M))
+
+
+def make_initial_conditions(M, r0):
+    """
+    Setting the initial conditions for a circular orbit in the CM frame.
+
+    r(0) = (r0, 0, 0)
+    v(0) = (0, v_circ, 0) with v_circ = sqrt(GM / r0)
+    """
+    r_vec = np.array([r0, 0, 0])
+    v_circ = np.sqrt(G * M / r0)
+    v_vec = np.array([0, v_circ, 0])
+    return np.concatenate([r_vec, v_vec])
+
+
+def accel_newtonian(r_vec, M):
+    """Setting up the Newtonian acceleration for the relative vector r."""
+    r = np.linalg.norm(r_vec)
+    return -G * M / r**3 * r_vec
+
+
+# integrator & physics 
+def leapfrog_newtonian(y0, t_span, dt, M,
+                       store_every=1,
+                       progress=False,
+                       progress_every=10_000):
+    """
+    Setting the Velocity-Verlet (leapfrog) for r, v
+
+    y = [rx, ry, rz, vx, vy, vz]
+    """
+    t0, t_end = t_span
+    n_steps = int(np.ceil((t_end - t0) / dt))
+
+    y = y0.copy()
+    r = y[0:3]
+    v = y[3:6]
+
+    n_store = n_steps // store_every + 1
+    t_arr = np.zeros(n_store)
+    y_arr = np.zeros((n_store, 6))
+
+    t = t0
+    t_arr[0] = t
+    y_arr[0] = y
+    a = accel_newtonian(r, M)
+
+    store_idx = 1
+
+    for i in range(1, n_steps + 1):
+       
+        v_half = v + 0.5 * dt * a   # half kick
+        r_new = r + dt * v_half # drift
+        a_new = accel_newtonian(r_new, M) # new accelaration
+        v_new = v_half + 0.5 * dt * a_new # 2nd half kick
+        r, v, a = r_new, v_new, a_new
+        t += dt
+
+        # storing every Nth step
+        if i % store_every == 0:
+            t_arr[store_idx] = t
+            y_arr[store_idx, :3] = r
+            y_arr[store_idx, 3:] = v
+            store_idx += 1
+
+        # quick progress update
+        if progress and (i % progress_every == 0 or i == n_steps):
+            frac = i / n_steps
+            print(f"\rLeapfrog: {i}/{n_steps} steps ({100*frac:5.1f}%)",
+                  end="", flush=True)
+
+    if progress:
+        print()  # printing newline
+
+    return t_arr, y_arr
+
+
+def energy_newtonian(y_arr, M, mu):
+    """Setting the total Newtonian energy of the relative motion."""
+    r_vec = y_arr[:, 0:3]
+    v_vec = y_arr[:, 3:6]
+    r = np.linalg.norm(r_vec, axis=1)
+    v2 = np.sum(v_vec**2, axis=1)
+    ke = 0.5 * mu * v2
+    pe = -G * M * mu / r
+    return ke + pe
+
+
+def split_positions_from_relative(y_arr, m1, m2):
+    """
+    Converting relative vector r = r1 - r2 into individual positions
+    in the center of mass frame.
+    """
+    M = m1 + m2
+    r_rel = y_arr[:, 0:3]
+    r1 = (m2 / M) * r_rel
+    r2 = -(m1 / M) * r_rel
+    return r1, r2
+
+
+# input/output helpers 
+def save_to_csv(filename, t_arr, y_arr, M, mu):
+    """
+    Saving orbit data to a CSV file.
+    """
+    r_vec = y_arr[:, 0:3]
+    v_vec = y_arr[:, 3:6]
+    r = np.linalg.norm(r_vec, axis=1)
+    E = energy_newtonian(y_arr, M, mu)
+
+    header = ["time", "rx", "ry", "rz", "vx", "vy", "vz", "radius", "energy"]
+
+    with open(filename, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        for i in range(len(t_arr)):
+            w.writerow([
+                t_arr[i],
+                r_vec[i, 0], r_vec[i, 1], r_vec[i, 2],
+                v_vec[i, 0], v_vec[i, 1], v_vec[i, 2],
+                r[i],
+                E[i],
+            ])
+
+    print(f"saved CSV data to {filename}")
+
+
+# main sim wrapper 
+def run_newtonian_orbit(
+    mode="debug",
+    m1_solar=30,
+    m2_solar=30,
+    r0=1e9,
+    n_orbits_debug=10,
+    steps_per_orbit_debug=2000,
+    n_orbits_prod=2000,
+    steps_per_orbit_prod=2000,
+    store_every_prod=100,
+    save_npz=True,
+    save_csv=False,
+):
+    """
+    This is a numerical sim: we step the orbit with leapfrog,
+    not an analytic formula.
+    """
+    mode = mode.lower()
+    if mode not in ("debug", "prod"):
+        raise ValueError("mode must be 'debug' or 'prod'")
+
+    # masses
+    m1 = m1_solar * M_SUN
+    m2 = m2_solar * M_SUN
+    M  = m1 + m2
+    mu = m1 * m2 / M
+
+    # initial conditions and period
+    y0 = make_initial_conditions(M, r0)
+    P = orbital_period(M, r0)
+
+    if mode == "debug":
+        # short high-res run with plots
+        N_ORBITS = n_orbits_debug
+        N_STEPS_PER_ORBIT = steps_per_orbit_debug
+        dt = P / N_STEPS_PER_ORBIT
+        t0, t_end = 0, N_ORBITS * P
+        n_steps = int(np.ceil((t_end - t0) / dt))
+
+        print("DEBUG run")
+        print(f"m1 = {m1_solar:g} Msun, m2 = {m2_solar:g} Msun")
+        print(f"r0 = {r0:g} m, P ≈ {P:g} s")
+        print(f"orbits = {N_ORBITS:g}, steps/orbit = {N_STEPS_PER_ORBIT:g}")
+        print(f"total steps ≈ {n_steps:g}")
+        print("------------------------------------------------")
+
+        t_arr, y_arr = leapfrog_newtonian(
+            y0, (t0, t_end), dt, M,
+            store_every=1,
+            progress=True,
+            progress_every=max(1, n_steps // 20),
+        )
+
+        r_vec = y_arr[:, 0:3]
+        r = np.linalg.norm(r_vec, axis=1)
+        E = energy_newtonian(y_arr, M, mu)
+
+        # quick sanity stats
+        r_min, r_max = np.min(r), np.max(r)
+        dr_rel = (r_max - r_min) / r0
+        E0 = E[0]
+        dE_max_rel = np.max(np.abs(E - E0)) / abs(E0)
+
+        print("Radius variation delta_r/r0 ≈", f"{dr_rel:g}")
+        print("Max fractional energy drift ≈", f"{dE_max_rel:g}")
+        print("------------------------------------------------")
+
+        if save_npz:
+            np.savez(
+                "newtonian_debug_run.npz",
+                t=t_arr, y=y_arr,
+                m1=m1, m2=m2, M=M, mu=mu,
+                r0=r0, dt=dt,
+                n_steps=n_steps,
+                n_orbits=N_ORBITS,
+                n_steps_per_orbit=N_STEPS_PER_ORBIT,
+            )
+            print("saved NPZ to newtonian_debug_run.npz")
+
+        if save_csv:
+            save_to_csv("newtonian_debug_run.csv", t_arr, y_arr, M, mu)
+
+        # ploting (only in debug) 
+        x = y_arr[:, 0]
+        y = y_arr[:, 1]
+
+        # relative orbit
+        plt.figure(figsize=(5, 5))
+        plt.plot(x, y)
+        plt.axis("equal")
+        plt.xlabel("x (m)")
+        plt.ylabel("y (m)")
+        plt.title("Relative Orbit (Newtonian, leapfrog)")
+        plt.grid(True)
+
+        # two-body view
+        r1, r2 = split_positions_from_relative(y_arr, m1, m2)
+        plt.figure(figsize=(5, 5))
+        plt.plot(r1[:, 0], r1[:, 1], label="BH 1")
+        plt.plot(r2[:, 0], r2[:, 1], label="BH 2")
+        plt.scatter(0, 0, c="k", s=20, label="CM")
+        plt.axis("equal")
+        plt.xlabel("x (m)")
+        plt.ylabel("y (m)")
+        plt.title("Two-body orbit in CM frame")
+        plt.grid(True)
+        plt.legend()
+
+        # radius vs time
+        plt.figure()
+        plt.plot(t_arr, r)
+        plt.xlabel("time (s)")
+        plt.ylabel("radius (m)")
+        plt.title("Radius vs time")
+        plt.grid(True)
+
+        # energy vs time
+        plt.figure()
+        plt.plot(t_arr, E)
+        plt.xlabel("time (s)")
+        plt.ylabel("Energy (J)")
+        plt.title("Energy conservation (Newtonian)")
+        plt.grid(True)
+
+        plt.show()
+
+    else:
+        # long run- no plots
+        N_ORBITS = n_orbits_prod
+        N_STEPS_PER_ORBIT = steps_per_orbit_prod
+        STORE_EVERY = store_every_prod
+
+        dt = P / N_STEPS_PER_ORBIT
+        t0, t_end = 0, N_ORBITS * P
+        n_steps = int(np.ceil((t_end - t0) / dt))
+        n_store = n_steps // STORE_EVERY + 1
+
+        print("PRODUCTION run")
+        print(f"m1 = {m1_solar:g} Msun, m2 = {m2_solar:g} Msun")
+        print(f"r0 = {r0:g} m, P ≈ {P:g} s")
+        print(f"orbits = {N_ORBITS:g}, steps/orbit = {N_STEPS_PER_ORBIT:g}")
+        print(f"total steps ≈ {n_steps:g}, stored points ≈ {n_store:g}")
+        print("------------------------------------------------")
+
+        t_arr, y_arr = leapfrog_newtonian(
+            y0, (t0, t_end), dt, M,
+            store_every=STORE_EVERY,
+            progress=True,
+            progress_every=max(1, n_steps // 50),
+        )
+
+        # light diagnostics (no plots)
+        r_vec = y_arr[:, 0:3]
+        r = np.linalg.norm(r_vec, axis=1)
+        E = energy_newtonian(y_arr, M, mu)
+        r_min, r_max = np.min(r), np.max(r)
+        dr_rel = (r_max - r_min) / r0
+        E0 = E[0]
+        dE_max_rel = np.max(np.abs(E - E0)) / abs(E0)
+
+        print("delta_r/r0 ≈", f"{dr_rel:g}")
+        print("Max fractional energy drift ≈", f"{dE_max_rel:g}")
+        print("------------------------------------------------")
+
+        if save_npz:
+            np.savez(
+                "newtonian_production_run.npz",
+                t=t_arr, y=y_arr,
+                m1=m1, m2=m2, M=M, mu=mu,
+                r0=r0, dt=dt,
+                n_steps=n_steps,
+                n_orbits=N_ORBITS,
+                n_steps_per_orbit=N_STEPS_PER_ORBIT,
+                store_every=STORE_EVERY,
+            )
+            print("saved NPZ to newtonian_production_run.npz")
+
+        if save_csv:
+            save_to_csv("newtonian_production_run.csv", t_arr, y_arr, M, mu)
+
+
+# small interactive front end
+def print_help(script_name: str):
+    print(f"\n{script_name} — Newtonian BH binary orbit sim\n")
+    print("This numerically integrates a two-body Newtonian orbit")
+    print("in the center-of-mass frame using a leapfrog integrator.\n")
+    print("To run interactively:")
+    print(f"  python {script_name} --interactive\n")
+    print("In interactive mode you will:")
+    print("  1) Choose DEBUG (short, plots) or PROD (long run, no plots).")
+    print("  2) Optionally tweak masses, separation, orbits, resolution.")
+    print("  3) Choose data output: NPZ, CSV, or both.\n")
+
+
+def prompt_bool(prompt, default=True):
+    """Yes/no question with a default."""
+    suffix = " [Y/n]: " if default else " [y/N]: "
+    ans = input(prompt + suffix).strip().lower()
+    if ans == "":
+        return default
+    if ans in ("y", "yes", "true", "t", "1"):
+        return True
+    if ans in ("n", "no", "false", "f", "0"):
+        return False
+    print("  Didn't understand, using default.")
+    return default
+
+
+def prompt_float(prompt, default):
+    s = input(f"{prompt} [{default:g}]: ").strip()
+    if s == "":
+        return default
+    try:
+        return float(s)
+    except ValueError:
+        print("  Not a number, keeping default.")
+        return default
+
+
+def prompt_int(prompt, default):
+    s = input(f"{prompt} [{default}]: ").strip()
+    if s == "":
+        return default
+    try:
+        return int(s)
+    except ValueError:
+        print("  Not an integer, keeping default.")
+        return default
+
+
+def interactive_main():
+    # defaults, use  can overwrite them interactively
+    m1_solar = 30
+    m2_solar = 30
+    r0       = 1e9
+
+    n_orbits_debug        = 10
+    steps_per_orbit_debug = 2000
+
+    n_orbits_prod         = 2000
+    steps_per_orbit_prod  = 2000
+    store_every_prod      = 100
+
+    print("Interactive setup\n")
+
+    # letting the user change physical / numerical parameters if they want
+    if prompt_bool("Change default masses / separation / orbits?", default=False):
+        m1_solar = prompt_float("m1 in solar masses", m1_solar)
+        m2_solar = prompt_float("m2 in solar masses", m2_solar)
+        r0       = prompt_float("Initial separation r0 (meters)", r0)
+
+        n_orbits_debug        = prompt_int("DEBUG: number of orbits",
+                                           n_orbits_debug)
+        steps_per_orbit_debug = prompt_int("DEBUG: steps per orbit",
+                                           steps_per_orbit_debug)
+        n_orbits_prod         = prompt_int("PROD: number of orbits",
+                                           n_orbits_prod)
+        steps_per_orbit_prod  = prompt_int("PROD: steps per orbit",
+                                           steps_per_orbit_prod)
+        store_every_prod      = prompt_int("PROD: store every N-th step",
+                                           store_every_prod)
+
+    # choose mode
+    print("\nChoose run mode:")
+    print("  DEBUG  = True  for a short sanity run, plots, full diagnostics.")
+    print("  DEBUG  = False for a long production run, no plots, data only.\n")
+    debug = prompt_bool("DEBUG", default=True)
+    mode = "debug" if debug else "prod"
+
+    # choosing storage
+    print("\nData storage:")
+    print("  1 - NPZ only   (compact NumPy binary)")
+    print("  2 - CSV only   (text)")
+    print("  3 - both NPZ and CSV")
+    choice = input("Enter 1, 2, or 3 [3]: ").strip()
+    if choice == "1":
+        save_npz, save_csv = True, False
+    elif choice == "2":
+        save_npz, save_csv = False, True
+    else:
+        save_npz, save_csv = True, True
+
+    run_newtonian_orbit(
+        mode=mode,
+        m1_solar=m1_solar,
+        m2_solar=m2_solar,
+        r0=r0,
+        n_orbits_debug=n_orbits_debug,
+        steps_per_orbit_debug=steps_per_orbit_debug,
+        n_orbits_prod=n_orbits_prod,
+        steps_per_orbit_prod=steps_per_orbit_prod,
+        store_every_prod=store_every_prod,
+        save_npz=save_npz,
+        save_csv=save_csv,
+    )
+
+
+def main():
+    script_name = Path(sys.argv[0]).name
+
+    # no args,  just show help
+    if len(sys.argv) == 1:
+        print_help(script_name)
+        return
+
+    # manual small "CLI"
+    args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print_help(script_name)
+        return
+
+    if "--interactive" in args:
+        interactive_main()
+    else:
+        print("Unknown arguments. Use:")
+        print(f"  python {script_name} --interactive")
+        print(f"or  python {script_name} -h")
+        return
+
+
+if __name__ == "__main__":
+    main()
