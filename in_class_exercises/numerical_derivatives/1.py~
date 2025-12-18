@@ -1,0 +1,56 @@
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def f(x):
+    # defining the function
+    return 1.0 + 0.5 * math.tanh(2.0 * x)
+
+
+def df_analytic(x):
+    # defining the analytic derivative sech^2(2x)
+    return 1.0 / math.cosh(2.0 * x)**2
+
+
+def central_difference(x, h):
+    """
+    computing the derivative using a central difference.
+
+    using ( f(x + h/2) - f(x - h/2) ) / h.
+    """
+
+    return (f(x + 0.5 * h) - f(x - 0.5 * h)) / h
+
+
+# running the script when executed directly
+if __name__ == "__main__":
+    # setting the range
+    x_min = -2.0
+    x_max = 2.0
+
+    # asking for step size
+    h_text = input("enter step size h (default 0.01): ").strip()
+    h = float(h_text) if h_text else 0.01
+
+    # creating x values
+    x_vals = np.arange(x_min, x_max + h, h)
+
+    # computing numerical and analytic derivatives
+    df_num = [central_difference(x, h) for x in x_vals]
+    df_exact = [df_analytic(x) for x in x_vals]
+
+    # making the plot
+    plt.figure()
+    plt.plot(x_vals, df_exact, label="analytic derivative")
+    plt.plot(x_vals, df_num, ".", label="numerical derivative")
+
+    # labeling the plot
+    plt.xlabel("x")
+    plt.ylabel("df/dx")
+    plt.title("central difference vs analytic derivative")
+    plt.legend()
+    plt.grid(True)
+
+    # showing the plot
+    plt.show()

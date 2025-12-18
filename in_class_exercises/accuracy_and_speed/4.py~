@@ -1,0 +1,59 @@
+import cmath
+
+def solve_quadratic(a, b, c):
+    """
+    solve a quadratic equation ax^2 + bx + c = 0.
+
+    computing the two solutions using:
+    - the standard quadratic formula
+    - an alternative form that is more numerically stable
+
+    allowing real or complex solutions depending on the inputs.
+    """
+
+    # stopping if this is not a quadratic
+    if a == 0:
+        print("not a quadratic (a = 0).")
+        return
+
+    # computing the discriminant
+    D = b**2 - 4*a*c
+
+    # computing the square root of the discriminant (real or complex)
+    sqrtD = cmath.sqrt(D)
+
+    # setting the standard quadratic formula solutions
+    x1_std = (-b + sqrtD) / (2*a)
+    x2_std = (-b - sqrtD) / (2*a)
+
+    # setting the alternative (stable) formula solutions
+    x1_alt = (2*c) / (-b - sqrtD)
+    x2_alt = (2*c) / (-b + sqrtD)
+
+    # printing a clean summary of inputs
+    print("\n=== quadratic equation solver ===")
+    print(f"a = {a}, b = {b}, c = {c}")
+    print(f"discriminant D = {D}\n")
+
+    # printing results from the standard formula
+    print("standard quadratic formula:")
+    print(f"x1 = {x1_std}")
+    print(f"x2 = {x2_std}\n")
+
+    # printing results from the alternative formula
+    print("alternative (stable) formula:")
+    print(f"x1 = {x1_alt}")
+    print(f"x2 = {x2_alt}\n")
+
+    # explaining the meaning of complex results
+    print("note:")
+    print("complex values mean no real roots exist.")
+
+
+# running the script interactively when executed directly
+if __name__ == "__main__":
+    a = float(input("enter a: ").strip().replace(",", "."))
+    b = float(input("enter b: ").strip().replace(",", "."))
+    c = float(input("enter c: ").strip().replace(",", "."))
+
+    solve_quadratic(a, b, c)
